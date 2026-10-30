@@ -6,7 +6,7 @@
 //261030
 //
 // Fuse : M103C 해제(필수), JTAGEN 해제(필수 : PF4/PF5 FAN_ADC 사용), BODEN 4.0V, 외부 16MHz 크리스탈
-// Linker : libm 포함 (log 사용)
+// NTC 온도는 테이블 보간으로 계산 (math.h / libm 불필요)
 
 #define F_CPU 16000000UL
 
@@ -14,7 +14,7 @@
 #include <avr/interrupt.h>
 #include <avr/wdt.h>
 #include <util/delay.h>
-#include <math.h>
+#include <avr/pgmspace.h>
 #include "user_define.h"
 
 
@@ -412,18 +412,39 @@ void fcLedDisplay(void)
 }
 
 
-//NTC 50K : ADC -> 0.1℃
+//NTC 50K B3950 저항표 (Ω) : -30℃ ~ 160℃, 5℃ 간격
+//  센서 B 정수가 다르면 R = 50000 * exp(B*(1/(T+273.15) - 1/298.15)) 로 다시 계산
+const uint32_t lNtcTbl[NTC_TBL_NUM] PROGMEM = {
+	1001020, 721585, 526923, 389491, 291229, 220130, 168103, 129623,	// -30 ~   5
+	 100873,  79186,  62677,  50000,  40186,  32528,  26507,  21741,	//  10 ~  45
+	  17941,  14892,  12431,  10432,   8799,   7458,   6352,   5433,	//  50 ~  85
+	   4668,   4027,   3488,   3032,   2646,   2317,   2035,   1794,	//  90 ~ 125
+	   1586,   1407,   1252,   1116,    998,    895,    805			// 130 ~ 160
+};
+
+//NTC 50K : ADC -> 0.1℃ (저항 계산 후 표에서 직선 보간)
 int16_t fcNtcTemp(uint16_t adc)
 {
-	float r, t;
+	uint32_t r, r_hi, r_lo;
+	uint8_t i;
 
 	if(adc < NTC_ADC_OPEN || adc > NTC_ADC_SHORT)	return TEMP_ERR;
 
-	r = NTC_R_PULLDOWN * (1024.0 - (float)adc) / (float)adc;
-	t = 1.0 / ( (1.0/298.15) + (log(r/NTC_R25) / NTC_BETA) ) - 273.15;
+	r = (uint32_t)NTC_R_PULLDOWN * (1024 - adc) / adc;	//NTC 저항 Ω
 
-	if(t >= 0)	return (int16_t)(t*10.0 + 0.5);
-	else		return (int16_t)(t*10.0 - 0.5);
+	if(r >= pgm_read_dword(&lNtcTbl[0]))				return NTC_TBL_T0 * 10;
+	if(r <= pgm_read_dword(&lNtcTbl[NTC_TBL_NUM-1]))	return (NTC_TBL_T0 + (NTC_TBL_NUM-1)*NTC_TBL_STEP) * 10;
+
+	for(i=0;i<NTC_TBL_NUM-1;i++){
+		r_hi = pgm_read_dword(&lNtcTbl[i]);
+		r_lo = pgm_read_dword(&lNtcTbl[i+1]);
+
+		if(r <= r_hi && r > r_lo){
+			return (NTC_TBL_T0 + i*NTC_TBL_STEP) * 10
+			     + (int16_t)( (r_hi - r) * (NTC_TBL_STEP*10) / (r_hi - r_lo) );
+		}
+	}
+	return TEMP_ERR;
 }
 
 int16_t fcTempFilter(int16_t old, int16_t now)

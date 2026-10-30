@@ -54,9 +54,10 @@
 //================================================================
 // NTC 50K (B=3950)  /  분압 : DC5V - NTC - ADC - R(10K 3296 가변) - GND
 //================================================================
-#define			NTC_R25				50000.0	//25℃ 저항
-#define			NTC_BETA			3950.0	//B 정수 (센서 데이터시트 값으로 수정)
-#define			NTC_R_PULLDOWN		10000.0	//R3/R4/R5 3296 가변저항 실측값 입력
+#define			NTC_R_PULLDOWN		10000UL	//R3/R4/R5 3296 가변저항 실측값 입력 (Ω)
+#define			NTC_TBL_NUM			39		//저항표 개수 (main.c lNtcTbl, B=3950)
+#define			NTC_TBL_T0			(-30)	//표 시작 온도 ℃
+#define			NTC_TBL_STEP		5		//표 간격 ℃
 
 #define			NTC_ADC_OPEN		10		//이하 = 센서 단선 (약 -30℃)
 #define			NTC_ADC_SHORT		1010	//이상 = 센서 단락

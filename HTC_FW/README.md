@@ -5,7 +5,7 @@ PTC / Peltier 모드를 선택하고 프로토콜(PT1~PT5)을 실행합니다. �
 ## Microchip Studio
 1. New Project → GCC C Executable Project → Device **ATmega128A**
 2. 생성된 main.c를 이 `main.c`로 교체하고 `user_define.h`를 추가
-3. Toolchain → AVR/GNU Linker → Libraries에 `libm`이 있는지 확인 (NTC 계산에 `log()` 사용)
+3. `log()` 등 수학 함수를 쓰지 않으므로 libm 설정은 필요 없습니다 (NTC는 저항표 보간).
 4. **Fuse (필수)**
    - `M103C` 해제 (공장 출하 시 ATmega103 호환 모드가 켜져 있음)
    - `JTAGEN` 해제 (PF4/PF5 = FAN_ADC1/2를 ADC로 사용)
@@ -82,7 +82,7 @@ DEBUG_COM(USART0, 19200)으로는 1초마다 `:DAT mode state pt step sv pv rema
 | 출력 데드밴드 | 3% 이하 출력은 끔 (극성이 자주 바뀌는 것 방지) |
 
 ## 확인 / 조정이 필요한 항목
-1. **NTC 분압 저항**: R3/R4는 10K 3296 가변저항입니다. 실측값을 `NTC_R_PULLDOWN`에 넣으세요. B정수는 센서 사양으로 `NTC_BETA`(기본 3950)를 수정하세요.
+1. **NTC 분압 저항**: R3/R4는 10K 3296 가변저항입니다. 실측값을 `NTC_R_PULLDOWN`에 넣으세요. 저항표(`lNtcTbl`)는 B=3950 기준입니다. 센서 B정수가 다르면 표를 다시 계산해야 합니다.
 2. **PID 값** (`PTC_KP/KI/KD`, `PELT_KP/KI/KD`)은 시작값입니다. 실제 장비에서 튜닝해야 합니다.
 3. **HOT/COOL 방향**: 회로도 이름 기준으로 HEAT = Q9A+Q12 입니다. 펠티어 배선이 반대이면 냉각 명령에 온도가 오릅니다. 처음 시험할 때 확인하세요.
 4. **FAN 전류 검출**: 4.7Ω × 48배이므로 0.1A FAN이면 ADC가 포화됩니다. 연결/단선만 판단하고, 회전 정지(Lock)는 감지하지 못합니다.
