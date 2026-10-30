@@ -38,18 +38,17 @@ int16_t iTempPelt = TEMP_ERR;
 int16_t iTempHs   = TEMP_ERR;
 uint8_t bSensorErrCnt=0;
 
-//protocol [mode][pt][step]
+//protocol 저장값 [mode][pt][step] (temp 0.1℃)
 int16_t iPtTemp[2][PT_MAX][STEP_MAX];
 uint8_t bPtTime[2][PT_MAX][STEP_MAX];
 
-const int16_t iDefTemp[2][STEP_MAX] = {
-	{ 50, 60, 70, 80, 60, 40 },		//PTC 기본값 ℃
-	{ 25, 15, 10, 20, 37, 25 }		//Peltier 기본값 ℃
-};
-const uint8_t bDefTime[2][STEP_MAX] = {
-	{ 2, 2, 3, 3, 2, 1 },			//PTC 기본값 분
-	{ 2, 3, 3, 3, 3, 2 }			//Peltier 기본값 분
-};
+//운전중 레시피 (RUN 시점의 화면 값 복사)
+int16_t iRunTemp[STEP_MAX];
+uint8_t bRunTime[STEP_MAX];
+
+//eeprom 비동기 저장
+uint8_t  bEepBusy=0;
+uint16_t wEepIdx=0;
 
 //run
 uint8_t  bMode=MODE_NONE;
@@ -89,20 +88,29 @@ uint8_t  bFanPtcOnSec=0, bFanPeltOnSec=0;
 uint8_t  bFanPtcErrCnt=0, bFanPeltErrCnt=0;
 uint16_t wPeltFanAfterSec=0;
 
-//comm
-uint8_t len=0;
-uint8_t bRxData[RX_BUF_MAX]={0,};
-uint8_t bRx[RX_BUF_MAX]={0,};
-char    bCmd[RX_BUF_MAX+1];
+//modbus
+uint16_t wMbReg[MB_W_REG_NUM]={0,};		//쓰기 영역 0~21
+uint8_t  bMbCmdFg=0;
+volatile uint8_t bMbRxBuf[MB_BUF_MAX];
+volatile uint8_t bMbRxCnt=0, bMbRxErr=0;
+volatile uint8_t bMbRxActive=0, bMbGapCnt=0, bMbFrameFg=0;
+volatile uint8_t bMbTxBuf[MB_BUF_MAX];
+volatile uint8_t bMbTxLen=0, bMbTxIdx=0;
+
+//debug
 uint8_t TxData[80];
-volatile uint8_t bRxCnt=0,bRxLen=0,bRxOk=0;
-uint8_t rxbuf=0,bRxSeq=0;
-int16_t iArg[ARG_MAX];
-uint8_t bGetMode=0, bGetPt=0;
 
 
 ISR(TIMER2_COMP_vect)   //1ms
 {
+	//modbus 프레임 끝 (3.5문자 무신호)
+	if(bMbRxActive){
+		if(++bMbGapCnt >= MB_FRAME_GAP){
+			bMbRxActive = 0;
+			if(bMbRxCnt)	bMbFrameFg = 1;
+		}
+	}
+
 	if(++b10msCnt >= 10)//10ms timer
 	{
 		b10msCnt = 0 ;
@@ -171,14 +179,14 @@ void Timer3_Init(void)
 	TCNT3 = 0;
 }
 
-//USART1 : TOUCH_COM(HMI) , USART0 : DEBUG_COM
+//USART1 : TOUCH_COM(HMI Modbus 9600) , USART0 : DEBUG_COM(19200)
 void UART_init(void)
 {
 	UCSR1A = (1 << U2X1); // x2
 	UCSR1B = (1 << RXCIE1) | (1 << RXEN1) | (1 << TXEN1);
 	UCSR1C = (1 << UCSZ11) | (1 << UCSZ10); // 8bit, 1stop, no parity
 	UBRR1H = 0;
-	UBRR1L = UBRR_19200;
+	UBRR1L = UBRR_9600;
 
 	UCSR0A = (1 << U2X0);
 	UCSR0B = (1 << TXEN0);
@@ -614,11 +622,25 @@ int main(void)
 
 		fcAdcConversion() ;
 
+		if(bMbFrameFg)		//HMI 요청 -> 100ms 이내 응답
+		{
+			fcModbusProcess();
+
+			bMbRxCnt = 0;
+			bMbRxErr = 0;
+			bMbFrameFg = 0;
+
+			if(bMbCmdFg){
+				bMbCmdFg = 0;
+				fcCmdProcess();
+			}
+		}
+
+		fcEepromTask();
+
 		if( b10msFg )
 		{
 			b10msFg=0;
-
-			Receive();
 		}
 
 		if(b100msFg)
@@ -642,7 +664,9 @@ int main(void)
 
 			fcRun();
 
-			Transfer(TX_DAT);	//그래프 데이터 1sec
+			fcErrorClearCheck();
+
+			Transfer(TX_DAT);	//DEBUG 1sec
 		}
 	}
 }
@@ -651,9 +675,10 @@ int main(void)
 //================================================================
 // 프로토콜 실행
 //================================================================
-void fcRunStart(uint8_t pt)
+//bMode, bPt, iRunTemp[], bRunTime[] 설정 후 호출
+void fcRunStart(void)
 {
-	bPt = pt;
+	fcAllOff();
 	lRunSec = 0;
 	bFanPtcReq = 0;
 	bRunState = ST_RUN;
@@ -661,10 +686,45 @@ void fcRunStart(uint8_t pt)
 	fcStepStart(0);
 }
 
-void fcRunStop(void)
+//1sec : 원인이 해소된 에러는 자동 해제 -> ERROR=0, STATE=대기
+//       (FAN / 단선 에러는 동작해야 확인 가능하므로 다음 RUN 명령에서 해제)
+void fcErrorClearCheck(void)
 {
-	fcAllOff();
-	if(bRunState != ST_ERROR)	bRunState = ST_IDLE;
+	static uint8_t bOkCnt = 0;
+	uint8_t ok = 0;
+
+	if(bError == ERR_NONE){ bOkCnt = 0; return; }
+
+	switch(bError){
+		case ERR_PTC_OVER:
+			ok = (iTempPtc != TEMP_ERR && iTempPtc < PTC_OVER_TEMP - 100);	//10℃ 히스테리시스
+		break;
+		case ERR_PELT_OVER:
+			ok = (iTempPelt != TEMP_ERR && iTempPelt < PELT_OVER_TEMP - 100);
+#if PELT_HS_SENSOR_USE
+			if(iTempHs == TEMP_ERR || iTempHs >= PELT_HS_OVER_TEMP - 100)	ok = 0;
+#endif
+		break;
+		case ERR_PTC_SENSOR:
+			ok = (iTempPtc != TEMP_ERR);
+		break;
+		case ERR_PELT_SENSOR:
+			ok = (iTempPelt != TEMP_ERR);
+		break;
+		default:
+			ok = 0;
+		break;
+	}
+
+	if(ok){
+		if(++bOkCnt >= 5){		//5초 연속 정상
+			bOkCnt = 0;
+			bError = ERR_NONE;
+			bSensorErrCnt = 0;
+			bRunState = ST_IDLE;
+		}
+	}
+	else bOkCnt = 0;
 }
 
 void fcRunEnd(void)
@@ -679,9 +739,7 @@ void fcRunEnd(void)
 //다음 유효 단계 시작 (시간 0 = 사용안함 단계는 건너뜀)
 void fcStepStart(uint8_t step)
 {
-	uint8_t m = bMode - 1;
-
-	while(step < STEP_MAX && bPtTime[m][bPt-1][step] == 0)	step++;
+	while(step < STEP_MAX && bRunTime[step] == 0)	step++;
 
 	if(step >= STEP_MAX){
 		fcRunEnd();
@@ -689,8 +747,8 @@ void fcStepStart(uint8_t step)
 	}
 
 	bStep      = step;
-	iSetTemp   = iPtTemp[m][bPt-1][step] * 10;
-	wRemainSec = (uint16_t)bPtTime[m][bPt-1][step] * 60;
+	iSetTemp   = iRunTemp[step];
+	wRemainSec = (uint16_t)bRunTime[step] * 60;
 	wRampSec   = 0;
 	bHoldFg    = 0;
 
@@ -803,7 +861,7 @@ void fcRun(void)
 		if(wRemainSec)	wRemainSec--;
 
 		if(wRemainSec == 0){
-			fcStepStart(bStep + 1);
+			fcStepStart(bStep + 1);		//STEP +1, 6단계 끝나면 STATE=완료
 			if(bRunState != ST_RUN)	return;
 		}
 	}
@@ -823,178 +881,253 @@ void fcRun(void)
 
 
 //================================================================
-// 통신  (HMI <-> MCU)   ':' + 명령 + CR LF
+// 통신  HMI(Autobase, 마스터) <-> MCU(슬레이브 1) : Modbus RTU 9600 8N1
+//  FC03 읽기 : 0~21(쓰기 영역), 100~104(STATE, STEP, ELAPSED, PT_TEMP, ERROR)
+//  FC06/FC16 쓰기 : 0~21  -> CMD(2) 에 쓰기가 들어오면 명령 처리 후 0 으로
 //================================================================
-uint8_t fcCmdIs(const char *cmd)
+uint16_t fcMbCrc(uint8_t *buf, uint8_t len)
 {
-	uint8_t i=0;
+	uint16_t crc = 0xffff;
+	uint8_t i, j;
 
-	while(cmd[i]){
-		if(bCmd[i] != cmd[i])	return 0;
-		i++;
+	for(i=0;i<len;i++){
+		crc ^= buf[i];
+		for(j=0;j<8;j++){
+			if(crc & 0x0001)	crc = (crc >> 1) ^ 0xa001;
+			else				crc >>= 1;
+		}
 	}
-	if(bCmd[i] == 0 || bCmd[i] == ' ')	return 1;
-	return 0;
+	return crc;
 }
 
-//명령어 뒤 숫자 인자 -> iArg[] , 리턴 = 개수 (0xff = 형식 에러)
-uint8_t fcGetArgs(void)
+//읽기 레지스터 값 (0xffff 리턴용 플래그 대신 ok 포인터)
+uint8_t fcMbRead(uint16_t addr, uint16_t *val)
 {
-	uint8_t i=0, n=0, neg, digit;
-	int16_t v;
+	int16_t pv;
+	uint8_t err;
 
-	while(bCmd[i] && bCmd[i] != ' ')	i++;
-
-	while(bCmd[i])
-	{
-		while(bCmd[i] == ' ' || bCmd[i] == ',')	i++;
-		if(bCmd[i] == 0)	break;
-		if(n >= ARG_MAX)	return 0xff;
-
-		neg = 0;
-		if(bCmd[i] == '-'){ neg = 1; i++; }
-
-		v = 0;
-		digit = 0;
-		while(bCmd[i] >= '0' && bCmd[i] <= '9'){
-			if(++digit > 4)	return 0xff;
-			v = v*10 + (bCmd[i] - 0x30);
-			i++;
-		}
-		if(digit == 0)	return 0xff;
-		if(bCmd[i] != 0 && bCmd[i] != ' ' && bCmd[i] != ',')	return 0xff;
-
-		iArg[n++] = neg ? -v : v;
+	if(addr < MB_W_REG_NUM){
+		*val = wMbReg[addr];
+		return 1;
 	}
-	return n;
+
+	switch(addr){
+		case REG_R_START:		//STATE
+			*val = bRunState;
+		break;
+		case REG_R_START+1:		//STEP 1~6
+			*val = bStep + 1;
+		break;
+		case REG_R_START+2:		//ELAPSED sec
+			*val = (lRunSec > 65535) ? 65535 : (uint16_t)lRunSec;
+		break;
+		case REG_R_START+3:		//PT_TEMP x10
+			if(bRunState == ST_IDLE)	pv = (wMbReg[REG_MODE] == MODE_PELT) ? iTempPelt : iTempPtc;
+			else						pv = (bMode == MODE_PELT) ? iTempPelt : iTempPtc;
+			if(pv == TEMP_ERR)	pv = 0;
+			*val = (uint16_t)pv;
+		break;
+		case REG_R_START+4:		//ERROR 1~6
+			err = bError;
+			if(err == ERR_PTC_SENSOR)	err = ERR_PTC_OPEN;
+			if(err == ERR_PELT_SENSOR)	err = ERR_PELT_OPEN;
+			*val = err;
+		break;
+		default:
+			return 0;
+	}
+	return 1;
 }
 
-void Receive(void)
+void fcMbWrite(uint16_t addr, uint16_t val)
 {
-	uint8_t i, n, m, p, s;
-	uint8_t bTxFg = 0;
+	wMbReg[addr] = val;
+	if(addr == REG_CMD)	bMbCmdFg = 1;	//같은 값이라도 쓰기 때마다 명령 처리
+}
 
-	if(!bRxOk)	return;
+void fcMbSend(uint8_t len)
+{
+	uint16_t crc;
 
-	cli();
-	for(i=0;i<bRxLen;i++){
-		bCmd[i] = bRx[i];
-		if(bCmd[i] >= 'a' && bCmd[i] <= 'z')	bCmd[i] -= 0x20;	//대문자
-	}
-	bCmd[i] = 0;
-	bRxOk = 0;
-	sei();
+	crc = fcMbCrc((uint8_t *)bMbTxBuf, len);
+	bMbTxBuf[len++] = crc & 0xff;		//CRC Low 먼저
+	bMbTxBuf[len++] = crc >> 8;
 
-	n = fcGetArgs();
+	while(UCSR1B & (1<<UDRIE1));		//이전 송신 완료 대기
 
-	if(fcCmdIs("MODE"))		//:MODE m   (0=없음 1=PTC 2=PELT)
+	bMbTxLen = len;
+	bMbTxIdx = 0;
+	UCSR1B |= (1<<UDRIE1);				//인터럽트 송신 시작
+}
+
+void fcMbException(uint8_t func, uint8_t code)
+{
+	bMbTxBuf[0] = MB_SLAVE_ID;
+	bMbTxBuf[1] = func | 0x80;
+	bMbTxBuf[2] = code;
+	fcMbSend(3);
+}
+
+void fcModbusProcess(void)
+{
+	uint8_t  *rx = (uint8_t *)bMbRxBuf;
+	uint8_t  n = bMbRxCnt, i, func, bcast, txlen;
+	uint16_t addr, qty, val, crc;
+
+	if(bMbRxErr || n < 8)	return;
+
+	crc = fcMbCrc(rx, n-2);
+	if( (crc & 0xff) != rx[n-2] || (crc >> 8) != rx[n-1] )	return;	//CRC 에러 -> 무응답
+
+	if(rx[0] != MB_SLAVE_ID && rx[0] != 0)	return;	//다른 주소
+	bcast = (rx[0] == 0);
+
+	func = rx[1];
+	addr = ((uint16_t)rx[2] << 8) | rx[3];
+	qty  = ((uint16_t)rx[4] << 8) | rx[5];
+
+	if(func == 0x03)		//Read Holding Registers
 	{
-		if(n == 1 && iArg[0] >= MODE_NONE && iArg[0] <= MODE_PELT &&
-		   bRunState != ST_RUN && bRunState != ST_PAUSE){
-			bMode = iArg[0];
-			if(bRunState == ST_END)	bRunState = ST_IDLE;
-			bTxFg = TX_OK;
+		if(bcast)	return;
+		if(qty == 0 || qty > (MB_BUF_MAX-5)/2){ fcMbException(func, 0x03); return; }
+
+		bMbTxBuf[0] = MB_SLAVE_ID;
+		bMbTxBuf[1] = func;
+		bMbTxBuf[2] = qty * 2;
+		txlen = 3;
+
+		for(i=0;i<qty;i++){
+			if(!fcMbRead(addr + i, &val)){ fcMbException(func, 0x02); return; }
+			bMbTxBuf[txlen++] = val >> 8;
+			bMbTxBuf[txlen++] = val & 0xff;
 		}
-		else bTxFg = TX_FAIL;
+		fcMbSend(txlen);
 	}
-	else if(fcCmdIs("RUN"))	//:RUN p  또는  :RUN m p
+	else if(func == 0x06)	//Write Single Register
 	{
-		if(n == 2 && iArg[0] >= MODE_PTC && iArg[0] <= MODE_PELT &&
-		   bRunState != ST_RUN && bRunState != ST_PAUSE){
-			bMode = iArg[0];
-			iArg[0] = iArg[1];
-			n = 1;
+		if(addr >= MB_W_REG_NUM){ if(!bcast) fcMbException(func, 0x02); return; }
+
+		fcMbWrite(addr, qty);	//qty 위치 = 값
+
+		if(bcast)	return;
+		for(i=0;i<6;i++)	bMbTxBuf[i] = rx[i];	//요청 그대로 응답
+		fcMbSend(6);
+	}
+	else if(func == 0x10)	//Write Multiple Registers
+	{
+		if(n < 9 || qty == 0 || rx[6] != qty*2 || n != 9 + qty*2){ if(!bcast) fcMbException(func, 0x03); return; }
+		if(addr + qty > MB_W_REG_NUM){ if(!bcast) fcMbException(func, 0x02); return; }
+
+		for(i=0;i<qty;i++){
+			val = ((uint16_t)rx[7 + i*2] << 8) | rx[8 + i*2];
+			fcMbWrite(addr + i, val);
 		}
 
-		if(n == 1 && iArg[0] >= 1 && iArg[0] <= PT_MAX && bMode != MODE_NONE &&
-		   bError == ERR_NONE && bRunState != ST_RUN && bRunState != ST_PAUSE){
-			fcRunStart(iArg[0]);
-			bTxFg = TX_OK;
-		}
-		else bTxFg = TX_FAIL;
-	}
-	else if(fcCmdIs("STOP"))
-	{
-		fcRunStop();
-		bTxFg = TX_OK;
-	}
-	else if(fcCmdIs("PAUSE"))
-	{
-		if(bRunState == ST_RUN){
-			fcAllOff();
-			bRunState = ST_PAUSE;
-			bTxFg = TX_OK;
-		}
-		else bTxFg = TX_FAIL;
-	}
-	else if(fcCmdIs("RESUME"))
-	{
-		if(bRunState == ST_PAUSE && bError == ERR_NONE){
-			bRunState = ST_RUN;
-			bHoldFg = 0;		//설정온도 재도달 후 남은시간 카운트
-			wRampSec = 0;
-			lPidSum = 0;
-			iPidPvOld = TEMP_ERR;
-			bOpenChkDone = 0;
-			wOpenCnt = 0;
-			bTxFg = TX_OK;
-		}
-		else bTxFg = TX_FAIL;
-	}
-	else if(fcCmdIs("CLR"))	//에러 해제
-	{
-		if( (iTempPtc  == TEMP_ERR || iTempPtc  < PTC_OVER_TEMP  - 100) &&
-		    (iTempPelt == TEMP_ERR || iTempPelt < PELT_OVER_TEMP - 100) ){
-			bError = ERR_NONE;
-			bFanPtcErrCnt = 0;
-			bFanPeltErrCnt = 0;
-			bSensorErrCnt = 0;
-			fcAllOff();
-			bRunState = ST_IDLE;
-			bTxFg = TX_OK;
-		}
-		else bTxFg = TX_FAIL;
-	}
-	else if(fcCmdIs("SET"))	//:SET m p s temp time
-	{
-		bTxFg = TX_FAIL;
-		if(n == 5 && iArg[0] >= MODE_PTC && iArg[0] <= MODE_PELT &&
-		   iArg[1] >= 1 && iArg[1] <= PT_MAX && iArg[2] >= 1 && iArg[2] <= STEP_MAX)
-		{
-			m = iArg[0];
-			p = iArg[1];
-			s = iArg[2];
-
-			if( (iArg[4] == 0 || (iArg[4] >= TIME_SET_MIN && iArg[4] <= TIME_SET_MAX)) &&
-			    ((m == MODE_PTC  && iArg[3] >= PTC_SET_MIN  && iArg[3] <= PTC_SET_MAX) ||
-			     (m == MODE_PELT && iArg[3] >= PELT_SET_MIN && iArg[3] <= PELT_SET_MAX)) )
-			{
-				iPtTemp[m-1][p-1][s-1] = iArg[3];
-				bPtTime[m-1][p-1][s-1] = iArg[4];
-				fcDataSave(m-1, p-1, s-1);
-				bTxFg = TX_OK;
-			}
-		}
-	}
-	else if(fcCmdIs("GET"))	//:GET m p
-	{
-		if(n == 2 && iArg[0] >= MODE_PTC && iArg[0] <= MODE_PELT && iArg[1] >= 1 && iArg[1] <= PT_MAX){
-			bGetMode = iArg[0];
-			bGetPt   = iArg[1];
-			bTxFg = TX_PT;
-		}
-		else bTxFg = TX_FAIL;
-	}
-	else if(fcCmdIs("STATUS?"))
-	{
-		bTxFg = TX_DAT;
+		if(bcast)	return;
+		for(i=0;i<6;i++)	bMbTxBuf[i] = rx[i];
+		fcMbSend(6);
 	}
 	else
 	{
-		bTxFg = TX_FAIL;
+		if(!bcast)	fcMbException(func, 0x01);
 	}
+}
 
-	if(bTxFg)	Transfer(bTxFg);
+//레시피 레지스터(10~21) -> 운전 테이블. 범위 밖이면 0 리턴
+uint8_t fcRecipeLoad(uint8_t mode, int16_t *temp, uint8_t *time)
+{
+	uint8_t i;
+	int16_t t;
+	uint16_t m;
+
+	for(i=0;i<STEP_MAX;i++){
+		t = (int16_t)wMbReg[REG_RECIPE + i*2];
+		m = wMbReg[REG_RECIPE + i*2 + 1];
+
+		if(m > TIME_SET_MAX)	return 0;
+
+		if(mode == MODE_PTC){
+			if(t < PTC_SET_MIN || t > PTC_SET_MAX)	return 0;
+		}
+		else{
+			if(t < PTC_SET_MIN || t > PTC_SET_MAX)	return 0;	//화면 범위 20.0~120.0
+			if(t > PELT_SET_MAX)	t = PELT_SET_MAX;			//펠티어 보호 제한
+			if(t < PELT_SET_MIN)	t = PELT_SET_MIN;
+		}
+		temp[i] = t;
+		time[i] = (uint8_t)m;
+	}
+	return 1;
+}
+
+void fcCmdProcess(void)
+{
+	uint16_t cmd, mode, pt;
+	uint8_t  i;
+	int16_t  temp[STEP_MAX];
+	uint8_t  time[STEP_MAX];
+
+	cmd = wMbReg[REG_CMD];
+	wMbReg[REG_CMD] = CMD_NONE;		//처리 후 0 으로
+
+	mode = wMbReg[REG_MODE];
+	pt   = wMbReg[REG_PT_NO];
+
+	switch(cmd){
+		case CMD_RUN:
+			if(bRunState == ST_RUN)	break;		//운전중 RUN 은 무시
+			if(mode < MODE_PTC || mode > MODE_PELT || pt < 1 || pt > PT_MAX)	break;
+			if(!fcRecipeLoad(mode, temp, time))	break;
+
+			//FAN / 단선 에러는 RUN 시 해제 후 재확인 (과열/센서는 즉시 다시 감지됨)
+			if(bError){
+				bError = ERR_NONE;
+				bFanPtcErrCnt = 0;
+				bFanPeltErrCnt = 0;
+				bSensorErrCnt = 0;
+			}
+
+			bMode = mode;
+			bPt   = pt;
+			for(i=0;i<STEP_MAX;i++){
+				iRunTemp[i] = temp[i];
+				bRunTime[i] = time[i];
+			}
+			fcRunStart();
+		break;
+
+		case CMD_STOP:		//일시정지 : STEP, ELAPSED 유지
+			if(bRunState == ST_RUN){
+				fcAllOff();
+				bRunState = ST_PAUSE;
+			}
+		break;
+
+		case CMD_RESUME:
+			if(bRunState == ST_PAUSE && bError == ERR_NONE){
+				bRunState = ST_RUN;
+				bHoldFg = 0;		//설정온도 재도달 후 남은시간 카운트
+				wRampSec = 0;
+				lPidSum = 0;
+				iPidPvOld = TEMP_ERR;
+				bOpenChkDone = 0;
+				wOpenCnt = 0;
+			}
+		break;
+
+		case CMD_SAVE:
+			pt = wMbReg[REG_SAVE_PT];
+			if(mode < MODE_PTC || mode > MODE_PELT || pt < 1 || pt > PT_MAX)	break;
+			if(!fcRecipeLoad(MODE_PTC, temp, time))	break;	//화면 값 그대로 저장 (20.0~120.0)
+
+			for(i=0;i<STEP_MAX;i++){
+				iPtTemp[mode-1][pt-1][i] = temp[i];
+				bPtTime[mode-1][pt-1][i] = time[i];
+			}
+			bEepBusy = 1;		//EEPROM 비동기 저장 (응답 지연 방지)
+			wEepIdx = 0;
+		break;
+	}
 }
 
 uint8_t fcTxNum(uint8_t idx, int32_t v)
@@ -1015,10 +1148,12 @@ uint8_t fcTxNum(uint8_t idx, int32_t v)
 	return idx;
 }
 
+//DEBUG_COM 출력 (USART0 19200)
 void Transfer(uint8_t type)
 {
-	uint8_t bTxlen=0, i;
-	int16_t pv, sv;
+#if DEBUG_TX_USE
+	uint8_t bTxlen=0;
+	int16_t pv;
 
 	TxData[bTxlen++] = ':';
 
@@ -1026,7 +1161,6 @@ void Transfer(uint8_t type)
 	{
 		//:DAT mode state pt step sv pv remain hold out err elapsed
 		pv = (bMode == MODE_PELT) ? iTempPelt : iTempPtc;
-		sv = (bRunState == ST_RUN || bRunState == ST_PAUSE) ? iSetTemp : 0;
 
 		TxData[bTxlen++] = 'D';
 		TxData[bTxlen++] = 'A';
@@ -1035,7 +1169,7 @@ void Transfer(uint8_t type)
 		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, bRunState);
 		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, bPt);
 		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, bStep + 1);
-		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, sv);
+		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, iSetTemp);
 		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, pv);
 		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, wRemainSec);
 		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, bHoldFg);
@@ -1043,33 +1177,8 @@ void Transfer(uint8_t type)
 		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, bError);
 		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, lRunSec);
 	}
-	else if(type == TX_FAIL)
-	{
-		TxData[bTxlen++] ='F';
-		TxData[bTxlen++] ='A';
-		TxData[bTxlen++] ='I';
-		TxData[bTxlen++] ='L';
-	}
-	else if(type == TX_OK)
-	{
-		TxData[bTxlen++] ='O';
-		TxData[bTxlen++] ='K';
-	}
-	else if(type == TX_PT)
-	{
-		//:PT m p t1 n1 t2 n2 ... t6 n6
-		TxData[bTxlen++] = 'P';
-		TxData[bTxlen++] = 'T';
-		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, bGetMode);
-		TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, bGetPt);
-		for(i=0;i<STEP_MAX;i++){
-			TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, iPtTemp[bGetMode-1][bGetPt-1][i]);
-			TxData[bTxlen++] = ' ';	bTxlen = fcTxNum(bTxlen, bPtTime[bGetMode-1][bGetPt-1][i]);
-		}
-	}
 	else if(type == TX_END)
 	{
-		//:END mode pt
 		TxData[bTxlen++] = 'E';
 		TxData[bTxlen++] = 'N';
 		TxData[bTxlen++] = 'D';
@@ -1078,7 +1187,6 @@ void Transfer(uint8_t type)
 	}
 	else if(type == TX_ERR)
 	{
-		//:ERR n
 		TxData[bTxlen++] = 'E';
 		TxData[bTxlen++] = 'R';
 		TxData[bTxlen++] = 'R';
@@ -1088,13 +1196,10 @@ void Transfer(uint8_t type)
 	TxData[bTxlen++] = 0x0d;
 	TxData[bTxlen++] = 0x0a;
 
-	UART_SendString1(&TxData[0],bTxlen);
-}
-
-void UART_Tx(uint8_t ch)
-{
-	while (! (UCSR1A & (1<<UDRE1)));	/* Wait for empty transmit buffer*/
-	UDR1 = ch ;
+	UART_SendString0(&TxData[0],bTxlen);
+#else
+	(void)type;
+#endif
 }
 
 void UART0_Tx(uint8_t ch)
@@ -1103,71 +1208,41 @@ void UART0_Tx(uint8_t ch)
 	UDR0 = ch ;
 }
 
-void UART_SendString1(uint8_t *str, uint8_t len)
+void UART_SendString0(uint8_t *str, uint8_t len)
 {
 	uint8_t j=0;
 
-	for(j=0 ; j<len ;j++)
-	{
-		UART_Tx(str[j]);
-#if DEBUG_TX_USE
-		UART0_Tx(str[j]);
-#endif
+	for(j=0 ; j<len ;j++)	UART0_Tx(str[j]);
+}
+
+//modbus 송신 (인터럽트)
+ISR(USART1_UDRE_vect)
+{
+	if(bMbTxIdx < bMbTxLen){
+		UDR1 = bMbTxBuf[bMbTxIdx++];
+	}
+	else{
+		UCSR1B &= ~(1<<UDRIE1);
 	}
 }
 
-
+//modbus 수신 : 바이트 저장, 무신호 시간은 1ms 타이머에서 판단
 ISR(USART1_RX_vect)
 {
+	uint8_t st, rxbuf;
+
+	st = UCSR1A;
 	rxbuf = UDR1;
 
-	switch(bRxSeq){
-		case 0:
-			if(rxbuf == ':') {//
-				bRxCnt=0;
-				bRxSeq=1;
-			}
-			else bRxCnt=0;
-		break;
-		case 1:
+	if(bMbFrameFg)	return;		//이전 프레임 처리중
 
-			if(rxbuf==0x0d ){
-				bRxSeq=2;
-			}
-			else if(rxbuf == ':') {
-				bRxCnt=0;
-				bRxSeq=1;
-			}
-			else{
-				bRxData[bRxCnt] = rxbuf;
-				if(++bRxCnt>=RX_BUF_MAX)	bRxCnt=0;
-			}
+	if(st & ((1<<FE1)|(1<<DOR1)))	bMbRxErr = 1;
 
-		break;
-		case 2:
+	if(bMbRxCnt < MB_BUF_MAX)	bMbRxBuf[bMbRxCnt++] = rxbuf;
+	else						bMbRxErr = 1;
 
-			if(rxbuf == 0x0a) {//
-				if(!bRxOk){		//이전 명령 처리 완료 후 갱신
-					for(len=0;len<bRxCnt;len++){
-						bRx[len] = bRxData[len] ;
-					}
-					bRxLen = bRxCnt;
-					bRxOk=1;
-				}
-				bRxSeq=0;
-				bRxCnt=0;
-			}
-			else if(rxbuf == ':') {
-				bRxCnt=0;
-				bRxSeq=1;
-			}
-			else{
-				bRxSeq=0;
-				bRxCnt=0;
-			}
-
-		break;
-	}
+	bMbGapCnt = 0;
+	bMbRxActive = 1;
 }
 
 
@@ -1181,22 +1256,16 @@ uint16_t fcPtAddr(uint8_t m, uint8_t p, uint8_t s)
 
 void fcDataErr_Check(void)
 {
-	uint8_t m, p, s, err;
-	int16_t tmin, tmax;
+	uint8_t m, p, s;
 
 	for(m=0;m<2;m++){
-		tmin = (m == 0) ? PTC_SET_MIN : PELT_SET_MIN;
-		tmax = (m == 0) ? PTC_SET_MAX : PELT_SET_MAX;
-
 		for(p=0;p<PT_MAX;p++){
 			for(s=0;s<STEP_MAX;s++){
-				err = 0;
-				if(iPtTemp[m][p][s] < tmin || iPtTemp[m][p][s] > tmax)	err = 1;
-				if(bPtTime[m][p][s] > TIME_SET_MAX)						err = 1;
-
-				if(err){
-					iPtTemp[m][p][s] = iDefTemp[m][s];
-					bPtTime[m][p][s] = bDefTime[m][s];
+				if(iPtTemp[m][p][s] < PTC_SET_MIN || iPtTemp[m][p][s] > PTC_SET_MAX ||
+				   bPtTime[m][p][s] > TIME_SET_MAX)
+				{
+					iPtTemp[m][p][s] = DEF_TEMP;
+					bPtTime[m][p][s] = DEF_TIME;
 					fcDataSave(m, p, s);
 				}
 			}
@@ -1228,8 +1297,8 @@ void fcReadData(void)
 		for(m=0;m<2;m++){
 			for(p=0;p<PT_MAX;p++){
 				for(s=0;s<STEP_MAX;s++){
-					iPtTemp[m][p][s] = iDefTemp[m][s];
-					bPtTime[m][p][s] = bDefTime[m][s];
+					iPtTemp[m][p][s] = DEF_TEMP;
+					bPtTime[m][p][s] = DEF_TIME;
 					fcDataSave(m, p, s);
 				}
 			}
@@ -1251,6 +1320,37 @@ void fcReadData(void)
 	}
 
 	fcDataErr_Check();
+}
+
+//main loop : SAVE 값을 EEPROM 에 1byte 씩 저장 (변경된 byte 만, 대기 없이)
+void fcEepromTask(void)
+{
+	uint8_t m, p, s, part, val;
+	uint16_t i;
+
+	if(!bEepBusy)				return;
+	if(EECR & (1<<EEWE))		return;		//이전 쓰기 진행중
+
+	while(wEepIdx < EEP_PT_SIZE)
+	{
+		i    = wEepIdx / 3;
+		part = wEepIdx % 3;
+		s = i % STEP_MAX;
+		p = (i / STEP_MAX) % PT_MAX;
+		m = i / (STEP_MAX * PT_MAX);
+
+		if(part == 0)		val = (iPtTemp[m][p][s] >> 8) & 0xff;
+		else if(part == 1)	val =  iPtTemp[m][p][s] & 0xff;
+		else				val =  bPtTime[m][p][s];
+
+		wEepIdx++;
+
+		if(EEPROM_ReadByte(ADDR_PT + wEepIdx - 1) != val){
+			EEPROM_WriteByte(ADDR_PT + wEepIdx - 1, val);
+			return;							//다음 loop 에서 계속
+		}
+	}
+	bEepBusy = 0;
 }
 
 void EEPROM_WriteByte(uint16_t Address, uint8_t Data)

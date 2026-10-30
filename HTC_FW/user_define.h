@@ -14,11 +14,12 @@
 #define			MODE_PTC			1
 #define			MODE_PELT			2
 
-#define			ST_IDLE				0
-#define			ST_RUN				1
-#define			ST_PAUSE			2
-#define			ST_END				3
-#define			ST_ERROR			4
+//HMI STATE(40101) 값과 동일
+#define			ST_IDLE				0		//대기
+#define			ST_RUN				1		//운전중
+#define			ST_END				2		//완료
+#define			ST_ERROR			3		//에러 정지
+#define			ST_PAUSE			4		//일시정지
 
 #define			PT_MAX				5		//프로토콜 PT1~PT5
 #define			STEP_MAX			6		//프로토콜당 6단계
@@ -33,19 +34,22 @@
 #define			ERR_FAN_PELT		4		//ER04 FAN_Peltier Part Error
 #define			ERR_PTC_OPEN		5		//ER05 PTC Heater 단선
 #define			ERR_PELT_OPEN		6		//ER06 Peltier 단선
-#define			ERR_PTC_SENSOR		7		//ER07 PTC NTC 센서 단선/단락 (추가)
-#define			ERR_PELT_SENSOR		8		//ER08 Peltier NTC 센서 단선/단락 (추가)
+#define			ERR_PTC_SENSOR		7		//PTC NTC 센서 단선/단락   -> HMI 에는 ER05 로 표시
+#define			ERR_PELT_SENSOR		8		//Peltier NTC 센서 단선/단락 -> HMI 에는 ER06 로 표시
 
 //================================================================
-// 설정 범위 (HMI 입력값 : 온도 ℃ 정수, 시간 분)
+// 설정 범위 (HMI 입력값 : 온도 x10 = 0.1℃, 시간 분)
 //================================================================
-#define			PTC_SET_MIN			25		//℃
-#define			PTC_SET_MAX			120		//℃
-#define			PELT_SET_MIN		5		//℃ (결로/결빙 방지)
-#define			PELT_SET_MAX		70		//℃ (펠티어 손상 방지)
+#define			PTC_SET_MIN			200		//20.0℃ (HMI 범위)
+#define			PTC_SET_MAX			1200	//120.0℃
+#define			PELT_SET_MIN		50		//5.0℃ (결로/결빙 방지)
+#define			PELT_SET_MAX		700		//70.0℃ (펠티어 손상 방지, 초과 설정은 70.0℃로 제한)
 
 #define			TIME_SET_MIN		1		//분
 #define			TIME_SET_MAX		10		//분  (0 = 사용안함 단계 -> 건너뜀)
+
+#define			DEF_TEMP			300		//초기값 30.0℃ (HMI 초기값과 동일)
+#define			DEF_TIME			3		//초기값 3분
 
 //================================================================
 // NTC 50K (B=3950)  /  분압 : DC5V - NTC - ADC - R(10K 3296 가변) - GND
@@ -154,27 +158,47 @@
 #define			LED_POWER_OFF		PORTB |=   0x01
 
 //================================================================
-// 통신 (USART1 = TOUCH_COM, USART0 = DEBUG_COM) 19200bps
+// 통신 USART1 = TOUCH_COM : Modbus RTU 슬레이브 9600 8N1
 //================================================================
+#define			UBRR_9600			207		//U2X=1, 16MHz -> 9615bps
+#define			MB_SLAVE_ID			1
+#define			MB_FRAME_GAP		5		//ms, 3.5문자(3.65ms) 이상 수신 없으면 프레임 끝
+#define			MB_BUF_MAX			64
+
+//쓰기 영역 (화면 -> 디바이스) 주소 0~21
+#define			MB_W_REG_NUM		22
+#define			REG_MODE			0		//40001 1=PTC 2=PELTIER
+#define			REG_PT_NO			1		//40002 1~5
+#define			REG_CMD				2		//40003 CMD
+#define			REG_SAVE_PT			3		//40004 1~5
+#define			REG_RECIPE			10		//40011~40022 STEP1_TEMP, STEP1_TIME ...
+
+//읽기 영역 (디바이스 -> 화면) 주소 100~104
+#define			REG_R_START			100
+#define			REG_R_NUM			5		//STATE, STEP, ELAPSED, PT_TEMP, ERROR
+
+#define			CMD_NONE			0
+#define			CMD_RUN				1
+#define			CMD_STOP			2		//일시정지
+#define			CMD_SAVE			3
+#define			CMD_RESUME			4
+
+//USART0 = DEBUG_COM 19200 8N1 : 1초마다 상태 ASCII 출력
 #define			UBRR_19200			103		//U2X=1, 16MHz
-#define			DEBUG_TX_USE		1		//1 = DEBUG_COM 으로도 동일 데이터 출력
-#define			RX_BUF_MAX			50
-#define			ARG_MAX				6
+#define			DEBUG_TX_USE		1
 
 #define			TX_DAT				1
-#define			TX_FAIL				2
-#define			TX_OK				3
-#define			TX_PT				4
-#define			TX_END				5
-#define			TX_ERR				6
+#define			TX_END				2
+#define			TX_ERR				3
 
 //================================================================
 // EEPROM
 //================================================================
-#define			INIT_DATA			0x5a31
+#define			INIT_DATA			0x5a32
 #define			ADDR_INIT_H			0
 #define			ADDR_INIT_L			1
 #define			ADDR_PT				16		//[mode 2][PT 5][STEP 6] x 3byte(temp H,L,time)
+#define			EEP_PT_SIZE			(2*PT_MAX*STEP_MAX*3)
 
 
 void EEPROM_WriteByte(uint16_t Address, uint8_t Data);
@@ -182,6 +206,7 @@ uint8_t EEPROM_ReadByte(uint16_t Address);
 void fcReadData(void);
 void fcDataErr_Check(void);
 void fcDataSave(uint8_t mode, uint8_t pt, uint8_t step);
+void fcEepromTask(void);
 
 void fcAdcConversion(void);
 int16_t fcNtcTemp(uint16_t adc);
@@ -190,8 +215,8 @@ void fcFanControl(void);
 void fcFanCheck(void);
 
 void fcRun(void);
-void fcRunStart(uint8_t pt);
-void fcRunStop(void);
+void fcRunStart(void);
+void fcErrorClearCheck(void);
 void fcRunEnd(void);
 void fcStepStart(uint8_t step);
 void fcOpenCheck(int16_t pv);
@@ -206,8 +231,10 @@ void Pelt_SetDuty(uint8_t dir, uint16_t duty);
 
 void fcLedDisplay(void);
 
-void Receive(void);
+void fcModbusProcess(void);
+void fcCmdProcess(void);
+uint16_t fcMbCrc(uint8_t *buf, uint8_t len);
 void Transfer(uint8_t type);
-void UART_SendString1(uint8_t *str, uint8_t len);
+void UART_SendString0(uint8_t *str, uint8_t len);
 
 #endif /* USER_DEFINE_H_ */

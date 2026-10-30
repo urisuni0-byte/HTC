@@ -1,6 +1,6 @@
 # HTC 펌웨어 (VSHCCB_V1, ATmega128A 16MHz)
 
-PTC / Peltier 모드를 선택하고 프로토콜(PT1~PT5)을 실행합니다. 각 프로토콜은 6단계(온도, 시간)로 되어 있고, 단계마다 설정 온도를 설정 시간 동안 유지합니다. 1초마다 HMI로 그래프 데이터를 보냅니다.
+PTC / Peltier 모드를 선택하고 프로토콜(PT1~PT5)을 실행합니다. 각 프로토콜은 6단계(온도, 시간)로 되어 있고, 단계마다 설정 온도를 설정 시간 동안 유지합니다. HMI가 500ms마다 상태와 온도를 읽어 가서 그래프를 그립니다.
 
 ## Microchip Studio
 1. New Project → GCC C Executable Project → Device **ATmega128A**
@@ -25,51 +25,48 @@ PTC / Peltier 모드를 선택하고 프로토콜(PT1~PT5)을 실행합니다. �
 | PTC_S1 / PELT_S2 / SPARE_S3 (NTC 50K) | ADC0 / ADC1 / ADC2 | |
 | FAN_ADC1 / FAN_ADC2 | ADC4 / ADC5 | FAN 전류 |
 | LED D5 | PB0 | LOW = ON |
-| TOUCH_COM (HMI) | USART1 (PD2/PD3) | 19200 8N1 |
-| DEBUG_COM | USART0 (PE0/PE1) | 19200 8N1, 송신 데이터 복사 |
+| TOUCH_COM (HMI) | USART1 (PD2/PD3) | Modbus RTU 9600 8N1 |
+| DEBUG_COM | USART0 (PE0/PE1) | 19200 8N1, 1초 상태 출력 |
 
-## HMI 통신 프로토콜 (ASCII, `:` 로 시작하고 CR LF로 끝남)
-### HMI → MCU
-| 명령 | 설명 | 응답 |
+## HMI 통신 (Modbus RTU, 문서 「VSHCCB RS232 통신 프로토콜」 기준)
+- USART1(TOUCH_COM), **9600 8N1**, 슬레이브 주소 1, FC 03 / 06 / 16
+- 프레임 끝 판단: 5ms 동안 수신이 없으면 프레임 끝 (3.5문자 = 3.65ms)
+- 응답은 인터럽트로 송신합니다. SAVE의 EEPROM 저장도 한 바이트씩 나눠서 하므로 응답이 늦어지지 않습니다 (100ms 이내).
+- CRC 에러, 다른 주소의 요청에는 응답하지 않습니다. 잘못된 주소나 기능 코드에는 예외 응답(01/02/03)을 보냅니다.
+
+| 주소 | 내용 | 디바이스 처리 |
 |---|---|---|
-| `:MODE m` | 모드 선택 (0=없음, 1=PTC, 2=PELTIER) | `:OK` / `:FAIL` |
-| `:SET m p s temp time` | 프로토콜 저장 (모드, PT 1~5, 단계 1~6, 온도 ℃, 시간 분 1~10, 0이면 그 단계 건너뜀). EEPROM에 저장 | `:OK` / `:FAIL` |
-| `:GET m p` | 프로토콜 읽기 | `:PT m p t1 n1 t2 n2 … t6 n6` |
-| `:RUN p` 또는 `:RUN m p` | 실행 | `:OK` / `:FAIL` |
-| `:STOP` | 정지 | `:OK` |
-| `:PAUSE` / `:RESUME` | 일시정지 / 재개 (재개하면 설정 온도에 다시 도달한 뒤 남은 시간을 셈) | `:OK` / `:FAIL` |
-| `:CLR` | 에러 해제 (온도가 정상일 때만) | `:OK` / `:FAIL` |
-| `:STATUS?` | 즉시 상태 요청 | `:DAT …` |
+| 0 MODE | 1=PTC, 2=PELTIER | RUN할 때 읽음 |
+| 1 PT_NO | 1~5 | RUN할 때 읽음 |
+| 2 CMD | 1 RUN, 2 STOP(일시정지), 3 SAVE, 4 RESUME | 쓰기가 들어올 때마다 처리하고 0으로 되돌림 |
+| 3 SAVE_PT | 1~5 | SAVE할 때 읽음 |
+| 10~21 | 단계별 온도×10 / 시간(분) | RUN할 때 운전 테이블로 복사 |
+| 100 STATE | 0 대기, 1 운전, 2 완료, 3 에러, 4 일시정지 | |
+| 101 STEP | 1~6 | |
+| 102 ELAPSED | RUN 이후 경과 초 (일시정지 중에는 멈춤) | |
+| 103 PT_TEMP | 현재 온도×10 (센서 이상이면 0) | 대기 중에는 MODE 레지스터의 센서 값 |
+| 104 ERROR | 0~6 | |
 
-예) PTC PT1의 1단계를 95℃, 3분으로 설정: `:SET 1 1 1 95 3`
+명령 처리 규칙
+- **RUN**: 레지스터 10~21의 값(20.0~120.0℃, 0~10분)을 검사해서, 범위를 벗어나면 무시합니다. 펠티어 모드에서는 70.0℃가 넘는 설정을 70.0℃로 제한합니다. 운전 중에 들어온 RUN은 무시합니다.
+- **STOP**: 운전 중일 때만 일시정지합니다. 출력을 끄고 STEP과 ELAPSED는 그대로 둡니다. 에러 상태에서 화면이 보내는 STOP은 아무 동작도 하지 않습니다.
+- **RESUME**: 멈췄던 단계부터 이어서 운전합니다. 설정 온도에 다시 도달한 뒤 남은 시간을 셉니다.
+- **SAVE**: 현재 MODE의 SAVE_PT번 PT로 EEPROM에 저장합니다. 운전에는 RUN할 때 화면이 보내는 값을 씁니다.
+- 각 단계는 설정 온도 ±1℃에 도달한 뒤부터 단계 시간을 셉니다. 6단계가 끝나면 STATE=2(완료)가 됩니다.
 
-### MCU → HMI (자동 송신)
-- **그래프 데이터, 1초마다**
-  `:DAT mode state pt step sv pv remain hold out err elapsed`
-  | 항목 | 내용 |
-  |---|---|
-  | mode | 0 / 1=PTC / 2=PELT |
-  | state | 0=대기, 1=동작, 2=일시정지, 3=완료, 4=에러 |
-  | pt, step | PT 번호, 단계 번호 (1~6, 화면의 "TEMP_1ST" 등) |
-  | sv, pv | 설정 온도, 현재 온도. **단위 0.1℃** (예: 950 = 95.0℃) |
-  | remain | 이 단계에 남은 시간(초). 화면의 `00:00` |
-  | hold | 0=목표 온도로 가는 중, 1=유지 중 (유지 중일 때만 카운트다운) |
-  | out | 출력 ‰ (PTC 0~1000, Peltier -1000 냉각 ~ +1000 가열) |
-  | err | 에러 코드 (화면의 `ER: 0X`) |
-  | elapsed | 실행 시작 후 경과 시간(초). 그래프 X축 |
-- **완료**: `:END mode pt` → HMI가 부저 3회 울리고 데이터 저장
-- **에러**: `:ERR n`
+DEBUG_COM(USART0, 19200)으로는 1초마다 `:DAT mode state pt step sv pv remain hold out err elapsed`를 출력합니다 (시험용).
 
-### 에러 코드
-| 코드 | 내용 |
-|---|---|
-| 01 | PTC Heater 과열 (135℃ 이상) |
-| 02 | Peltier 과열 (80℃ 이상) |
-| 03 | FAN_Vial(PTC) FAN 전류 없음 |
-| 04 | FAN_Peltier 전류 없음 |
-| 05 | PTC Heater 단선 (출력 90% 이상으로 60초 동안 1℃도 오르지 않음) |
-| 06 | Peltier 단선 (출력 90% 이상으로 120초 동안 1℃도 변하지 않음) |
-| 07 / 08 | PTC / Peltier NTC 센서 단선·단락 (추가한 코드) |
+### 에러 코드 (ERROR 레지스터)
+| 코드 | 내용 | 해제 |
+|---|---|---|
+| 01 | PTC Heater 과열 (135℃ 이상) | 125℃ 미만으로 5초 지나면 자동 해제 |
+| 02 | Peltier 과열 (80℃ 이상) | 70℃ 미만으로 5초 지나면 자동 해제 |
+| 03 | FAN_Vial(PTC) FAN 전류 없음 | 다음 RUN 명령에서 해제 후 다시 확인 |
+| 04 | FAN_Peltier 전류 없음 | 다음 RUN 명령에서 해제 |
+| 05 | PTC Heater 단선 (출력 90% 이상으로 60초 동안 1℃도 오르지 않음) 또는 PTC 센서 단선·단락 | 히터: 다음 RUN / 센서: 정상으로 5초 지나면 자동 |
+| 06 | Peltier 단선 (120초 동안 1℃도 변하지 않음) 또는 Peltier 센서 단선·단락 | 위와 같음 |
+
+에러가 해제되면 ERROR=0, STATE=0(대기)이 됩니다.
 
 ## 펠티어 보호 초기값 (`user_define.h`)
 | 항목 | 값 |
