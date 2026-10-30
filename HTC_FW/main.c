@@ -733,7 +733,7 @@ void fcRunEnd(void)
 	bRunState = ST_END;
 	wRemainSec = 0;
 
-	Transfer(TX_END);	//HMI : 부저 3회 + 데이터 저장
+	Transfer(TX_END);	//DEBUG
 }
 
 //다음 유효 단계 시작 (시간 0 = 사용안함 단계는 건너뜀)
@@ -1096,10 +1096,18 @@ void fcCmdProcess(void)
 			fcRunStart();
 		break;
 
-		case CMD_STOP:		//일시정지 : STEP, ELAPSED 유지
+		case CMD_PAUSE:		//일시정지 : STEP, ELAPSED 유지
 			if(bRunState == ST_RUN){
 				fcAllOff();
 				bRunState = ST_PAUSE;
+			}
+		break;
+
+		case CMD_STOP:		//정지 : 출력 OFF -> 대기 (에러 상태는 유지)
+			if(bRunState == ST_RUN || bRunState == ST_PAUSE || bRunState == ST_END){
+				fcAllOff();
+				bRunState = ST_IDLE;
+				wRemainSec = 0;
 			}
 		break;
 

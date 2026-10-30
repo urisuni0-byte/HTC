@@ -179,9 +179,10 @@
 
 #define			CMD_NONE			0
 #define			CMD_RUN				1
-#define			CMD_STOP			2		//일시정지
+#define			CMD_PAUSE			2		//일시정지 (STEP, ELAPSED 유지)
 #define			CMD_SAVE			3
-#define			CMD_RESUME			4
+#define			CMD_RESUME			4		//일시정지 -> 이어서 운전
+#define			CMD_STOP			5		//정지 (운전 종료 -> 대기)  * HMI 코드와 맞출 것
 
 //USART0 = DEBUG_COM 19200 8N1 : 1초마다 상태 ASCII 출력
 #define			UBRR_19200			103		//U2X=1, 16MHz
