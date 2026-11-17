@@ -56,7 +56,7 @@
 
 //무게 단위 : 0.1g
 #define			SPAN_REF_WEIGHT		1000	//스팬은 100.0g 기준 raw 값으로 저장
-#define			DEF_SPAN			29380L	//초기 스팬 : TAL221 , 2단 R2=33K/R3=1K , R4=1K/R6=33K -> x33 (실측 x30.9 일때 27520 기준 환산)
+#define			DEF_SPAN			26710L	//초기 스팬 : TAL221 , 2단 R2=30K/R3=1K , R4=1K/R6=30K -> x30 (실측 x30.9 일때 27520 기준 환산)
 #define			SPAN_MIN_RAW		250		//스팬 교정 최소 변화량 (ADC 5 x 50)
 #define			OVER_WEIGHT			1200	//120.0g 이상 -> 과부하
 #define			WEIGHT_LIMIT		32000	//표시 제한
