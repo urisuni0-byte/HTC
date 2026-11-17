@@ -3,16 +3,17 @@
  *
  */
 //261112
+//261117 전원 투입 영점 교정/에러 , 30K 초기 스팬
 
 #ifndef DEFINE_H_
 #define DEFINE_H_
 
-#define			FW_VERSION			100		//v1.00
+#define			FW_VERSION			101		//v1.01
 
 //================================================================
 // 포트 (회로도 SVROCB_V1 기준)
 //================================================================
-// PC0~PC4 (ADC0~4) : L/C_ADC1~5  (INA155 x50 -> MCP6242 x11)
+// PC0~PC4 (ADC0~4) : L/C_ADC1~5  (INA155 x50 -> MCP6242 x30)
 // PC5              : STATE LED D1  (LOW = ON)
 // PD0 / PD1        : RS485_RxD / RS485_TxD  (MAX485 RO / DI)
 // PD2              : RS485_Drive (MAX485 DE,/RE)  HIGH = 송신
