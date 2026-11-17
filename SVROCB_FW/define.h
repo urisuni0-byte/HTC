@@ -4,11 +4,12 @@
  */
 //261112
 //261117 전원 투입 영점 교정/에러 , 30K 초기 스팬
+//261117 LED AUTO 감지 기준 20.0g ON / 18.0g OFF
 
 #ifndef DEFINE_H_
 #define DEFINE_H_
 
-#define			FW_VERSION			101		//v1.01
+#define			FW_VERSION			102		//v1.02
 
 //================================================================
 // 포트 (회로도 SVROCB_V1 기준)
@@ -62,8 +63,8 @@
 #define			OVER_WEIGHT			1200	//120.0g 이상 -> 과부하
 #define			WEIGHT_LIMIT		32000	//표시 제한
 
-#define			DEF_DETECT_ON		50		//5.0g 이상 -> 감지 (LED ON)
-#define			DEF_DETECT_OFF		30		//3.0g 미만 -> 감지 해제
+#define			DEF_DETECT_ON		200		//20.0g 이상 -> 감지 (LED ON)
+#define			DEF_DETECT_OFF		180		//18.0g 미만 -> 감지 해제 (히스테리시스 2.0g)
 #define			DETECT_MAX			1000	//설정 범위 0.1~100.0g
 #define			DEF_CAL_WEIGHT		1000	//스팬 교정 분동 100.0g
 #define			CAL_WEIGHT_MIN		100		//10.0g
@@ -149,6 +150,8 @@
 #define			ADDR_DETECT_OFF		34
 #define			ADDR_CAL_WEIGHT		36
 #define			ADDR_LED_MODE		38
+#define			ADDR_SET_VER		39		//감지 기준 초기값 버전 (다르면 감지 기준만 새 초기값으로)
+#define			SET_VER				1		//1 = 20.0g / 18.0g
 
 //bSaveFg
 #define			SAVE_ZERO			0x01

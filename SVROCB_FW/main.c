@@ -13,6 +13,8 @@
 //전원 투입 영점 교정 : 전원 ON 시 무부하로 가정 -> 영점을 EEPROM 저장
 //다음 전원 ON 시 저장 영점과 ±5.0g 넘게 다르면 영점 에러 (LED 점멸 , 무게 측정 안함)
 //2단 앰프 R2=R6=30K (x30) 에 맞춰 초기 스팬 변경 (실측 31.0mV/g)
+//261117  v1.02
+//LED AUTO : 무게 20.0g 이상 ON , 18.0g 미만 OFF (기존 5.0g / 3.0g)
 
 #define F_CPU 16000000UL
 
@@ -925,6 +927,16 @@ void fcReadData(void)
 	wDetectOff = fcEepReadWord(ADDR_DETECT_OFF);
 	wCalWeight = fcEepReadWord(ADDR_CAL_WEIGHT);
 	bLedMode   = EEPROM_ReadByte(ADDR_LED_MODE);
+
+	//감지 기준 초기값이 바뀐 펌웨어 -> 감지 기준만 새 초기값으로 저장 (영점/스팬은 유지)
+	if(EEPROM_ReadByte(ADDR_SET_VER) != SET_VER)
+	{
+		wDetectOn  = DEF_DETECT_ON;
+		wDetectOff = DEF_DETECT_OFF;
+		fcEepWriteWord(ADDR_DETECT_ON,  wDetectOn);
+		fcEepWriteWord(ADDR_DETECT_OFF, wDetectOff);
+		EEPROM_WriteByte(ADDR_SET_VER, SET_VER);
+	}
 
 	//범위 밖이면 초기값
 	if(wDetectOn < 1 || wDetectOn > DETECT_MAX)		wDetectOn = DEF_DETECT_ON;
