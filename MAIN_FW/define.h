@@ -98,6 +98,7 @@
 #define			PC_TX_SIZE			512
 #define			PC_ARG_MAX			6
 #define			CHECKSUM_REQUIRED	0		//0 = *CS 없어도 받음 (터미널 시험용) , 1 = 필수
+#define			TX_CHECKSUM			0		//송신 프레임 '*CS' : 0 = 붙이지 않음 (CR LF 로 끝) , 1 = 붙임
 
 #define			DEF_AUTO_TIME		200		//ms 자동 송신 주기 (0 = 요청시만)
 #define			AUTO_TIME_MIN		100

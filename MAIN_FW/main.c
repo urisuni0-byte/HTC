@@ -13,6 +13,7 @@
 //RS485 포트 USART1 -> USART3 (RXD3/TXD3) 변경 , RS232 는 USART0 (RXD0/TXD0)
 //RS485 DE,/RE 핀 PA0 -> PJ2 변경
 //RS232 115200 -> 38400 변경 (16MHz 에서 115200 오차 2.1% 로 글자 깨짐)
+//메인 -> 상위 송신 프레임에서 '*체크섬' 제거 (CR LF 로 끝)
 //RS485 요청 송신 완료 전 수신 바이트 무시 (에코/잡음으로 응답 깨짐 방지) , $DBG 통신 진단 명령 추가
 
 #define F_CPU 16000000UL
@@ -692,15 +693,17 @@ void fcOutTenth(int16_t v)
 	fcOutChar('0' + (u % 10));
 }
 
-//'*' + 체크섬 2자리 + CR LF
+//프레임 끝 : CR LF  (TX_CHECKSUM = 1 이면 '*' + 체크섬 2자리 + CR LF)
 void fcOutEnd(void)
 {
+#if TX_CHECKSUM
 	const char hex[] = "0123456789ABCDEF";
 	uint8_t cs = bOutCs;
 
 	fcPcPutc('*');
 	fcPcPutc(hex[cs >> 4]);
 	fcPcPutc(hex[cs & 0x0f]);
+#endif
 	fcPcPutc('\r');
 	fcPcPutc('\n');
 }
