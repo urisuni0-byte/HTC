@@ -68,10 +68,15 @@
 #define			CAL_WEIGHT_MIN		100		//10.0g
 #define			CAL_WEIGHT_MAX		1200	//120.0g
 
-//전원 투입 영점 : 영점 미설정(0) 이거나 저장 영점 기준 ±20.0g 이내이면 현재값을 영점으로 (RAM)
-#define			ZERO_AT_POWERON		1		//1 = 사용
-#define			POWERON_ZERO_TIME	30		//x100ms = 3초 후 실행
-#define			POWERON_ZERO_RANGE	200		//±20.0g
+//전원 투입 영점 교정 (전원 ON 시 로드셀 무부하로 가정)
+// 저장된 영점이 없으면 현재값을 영점으로 EEPROM 저장
+// 저장 영점 기준 ±ZERO_ERR_RANGE 이내 -> 현재값을 새 영점으로 EEPROM 저장
+// 범위 밖 -> 영점 에러 : 해당 채널 LED 점멸 , 무게 측정 안함 (0) , 저장 영점은 그대로 유지
+//          해제 : 무부하로 다시 전원 ON , 또는 메인보드 영점 명령(CMD 1~5, 9)
+#define			POWERON_ZERO_TIME	30		//x100ms = 3초 후 실행 (이동평균 안정 대기)
+#define			ZERO_ERR_RANGE		50		//±5.0g (빈병 15g 이 올라간 채로 켜면 에러)
+#define			ZERO_UNSET_L		0x0000	//EEPROM 영점 미설정 값
+#define			ZERO_UNSET_H		0xFFFF
 
 #define			LED_MODE_AUTO		0		//무게 감지시 스테이션 LED ON
 #define			LED_MODE_MANUAL		1		//메인보드가 LED 직접 제어
@@ -103,6 +108,7 @@
 #define			M_LC_START_NO		8		//CH1 의 로드셀 번호 (DIP0 -> 1, DIP1 -> 6)
 #define			M_FW_VERSION		9
 #define			M_RAW1				10		//10~14 raw (0~51150)
+#define			M_ZERO_ERR			15		//bit0~4 전원 투입 영점 에러
 
 #define			M_LED_MODE			20		//쓰기 0 = AUTO, 1 = MANUAL
 #define			M_LED_MANUAL		21		//쓰기 bit0~4 스테이션 LED (MANUAL)

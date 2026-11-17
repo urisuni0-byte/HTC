@@ -57,6 +57,7 @@ uint8_t bLedCnt=0,bLedFg=0;
 int16_t  iWeight[LC_NUM]={0,};		//0.1g
 uint8_t  bDetect[BOARD_NUM]={0,};		//bit0~4
 uint16_t wError[BOARD_NUM]={0,};		//bit0~4 센서 이상 , bit8~12 과부하
+uint8_t  bZeroErr[BOARD_NUM]={0,};	//bit0~4 영점 에러
 uint8_t  bOnline[BOARD_NUM]={0,};
 uint8_t  bFailCnt[BOARD_NUM]={0,};
 uint16_t wBoardFw[BOARD_NUM]={0,};
@@ -463,6 +464,7 @@ void fcPollResult(uint8_t res)
 		bDetect[b]  = fcMbGetReg(S_DETECT) & 0x1f;
 		wError[b]   = fcMbGetReg(S_ERROR);
 		wBoardFw[b] = fcMbGetReg(S_FW_VERSION);
+		bZeroErr[b] = fcMbGetReg(S_ZERO_ERR) & 0x1f;
 		bFailCnt[b] = 0;
 		bOnline[b]  = 1;
 	}
@@ -697,6 +699,7 @@ void fcStatusMake(char *st)
 
 			if(bOnline[b]==0)					st[n] = ST_COMM_ERR;
 			else if(wError[b] & bit)			st[n] = ST_SENSOR_ERR;
+			else if(bZeroErr[b] & bit)			st[n] = ST_ZERO_ERR;
 			else if(wError[b] & (bit<<8))		st[n] = ST_OVER;
 			else if(bDetect[b] & bit)			st[n] = ST_DETECT;
 			else								st[n] = ST_NONE;

@@ -49,8 +49,8 @@
 #define			MB_RX_SIZE			64
 #define			MB_TX_SIZE			32
 
-#define			POLL_REG_START		0		//주기 읽기 : 0~9 (무게, 감지, 에러, ID, FW)
-#define			POLL_REG_NUM		10
+#define			POLL_REG_START		0		//주기 읽기 : 0~15 (무게, 감지, 에러, ID, FW, raw, 영점 에러)
+#define			POLL_REG_NUM		16		//0~15 (15 = 영점 에러)
 
 //SVROCB 레지스터 (SVROCB_FW/define.h 와 동일)
 #define			S_WEIGHT1			0		//0~4 무게 0.1g
@@ -58,6 +58,7 @@
 #define			S_ERROR				6		//bit0~4 센서 이상 , bit8~12 과부하
 #define			S_BOARD_ID			7
 #define			S_FW_VERSION		9
+#define			S_ZERO_ERR			15		//bit0~4 전원 투입 영점 에러
 #define			S_LED_MODE			20
 #define			S_LED_MANUAL		21
 #define			S_DETECT_ON			22
@@ -111,6 +112,7 @@
 #define			ST_OVER				'O'		//있음 + 과부하
 #define			ST_SENSOR_ERR		'E'		//센서 이상
 #define			ST_COMM_ERR			'C'		//보드 통신 끊김
+#define			ST_ZERO_ERR			'Z'		//전원 투입 영점 에러 (무게 측정 안함)
 
 //================================================================
 // EEPROM

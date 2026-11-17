@@ -42,7 +42,7 @@ volatile uint8_t b10msCnt=0,b10msFg=0;
 volatile uint8_t b100msCnt=0,b100msFg=0;
 uint8_t b1SecCnt=0;
 uint8_t bLedCnt=0,bLedFg=0;
-uint8_t bBlinkCnt=0,bBlinkFg=0;
+uint8_t bBlinkCnt=0,bBlinkFg=0,bFastBlinkFg=0;
 
 //adc
 volatile uint16_t AdcData[CH_NUM]={0,};
@@ -60,6 +60,7 @@ int32_t  lSpan[CH_NUM]={0,};		//100.0g 일때 raw 변화량
 int16_t  iWeight[CH_NUM]={0,};		//무게 0.1g
 uint8_t  bErrCnt[CH_NUM]={0,};
 uint8_t  bSensorErr=0;				//bit0~4 센서 이상
+uint8_t  bZeroErr=0;				//bit0~4 전원 투입 영점 에러 (무게 측정 안함)
 uint8_t  bOverFg=0;					//bit0~4 과부하
 uint8_t  bDetect=0;					//bit0~4 감지
 
@@ -299,10 +300,8 @@ int main(void)
 			{
 				if(++bPowerOnCnt >= POWERON_ZERO_TIME)
 				{
-					bPowerOnFg = 1;
-#if ZERO_AT_POWERON
 					fcPowerOnZero();
-#endif
+					bPowerOnFg = 1;
 				}
 			}
 
@@ -310,12 +309,10 @@ int main(void)
 			if(bCommCnt < COMM_TIMEOUT)	bCommCnt++;
 			bCommOk = (bCommCnt < COMM_TIMEOUT);
 
-			//500ms 점멸 플래그 (센서 이상 채널 LED 점멸)
-			if(++bBlinkCnt >= 5)
-			{
-				bBlinkCnt = 0;
-				bBlinkFg ^= 1;
-			}
+			//점멸 플래그 : 영점 에러 200ms , 센서 이상 500ms
+			if(++bBlinkCnt >= 10)	bBlinkCnt = 0;
+			if((bBlinkCnt % 2)==0)	bFastBlinkFg ^= 1;
+			if((bBlinkCnt % 5)==0)	bBlinkFg ^= 1;
 
 			fcStLedControl();
 			fcStateLed();
@@ -363,21 +360,17 @@ void fcStLedControl(void)
 	{
 		bit = 1<<k;
 
-		if(bLedMode == LED_MODE_MANUAL)		//메인보드 제어
-		{
-			fcStLed(k, (bLedManual & bit) ? 1 : 0);
-		}
-		else								//AUTO : 감지 ON , 센서 이상은 점멸
-		{
-			if(bSensorErr & bit)	fcStLed(k, bBlinkFg);
-			else					fcStLed(k, (bDetect & bit) ? 1 : 0);
-		}
+		//에러는 LED 모드와 상관없이 점멸
+		if(bSensorErr & bit)					fcStLed(k, bBlinkFg);		//센서 이상 500ms 점멸
+		else if(bZeroErr & bit)					fcStLed(k, bFastBlinkFg);	//영점 에러 200ms 점멸
+		else if(bLedMode == LED_MODE_MANUAL)	fcStLed(k, (bLedManual & bit) ? 1 : 0);	//메인보드 제어
+		else									fcStLed(k, (bDetect & bit) ? 1 : 0);	//AUTO : 감지 ON
 	}
 }
 
 //STATE LED (D1)
 // 전원투입 영점 전 : 켜짐
-// 센서 이상       : 100ms 점멸
+// 센서 이상/영점 에러 : 100ms 점멸
 // 통신 정상       : 500ms 점멸
 // 통신 없음       : 1sec 점멸
 void fcStateLed(void)
@@ -390,7 +383,7 @@ void fcStateLed(void)
 		return;
 	}
 
-	if(bSensorErr)		time = 1;
+	if(bSensorErr || bZeroErr)	time = 1;
 	else if(bCommOk)	time = 5;
 	else				time = 10;
 
@@ -478,6 +471,9 @@ void fcLoadCell(void)
 
 		if(w > WEIGHT_LIMIT)	w = WEIGHT_LIMIT;
 		if(w < -WEIGHT_LIMIT)	w = -WEIGHT_LIMIT;
+
+		//전원 투입 영점 전 , 영점 에러 , 센서 이상 -> 무게 측정 안함
+		if((bPowerOnFg==0) || (bZeroErr & bit) || (bSensorErr & bit))	w = 0;
 		iWeight[ch] = (int16_t)w;
 
 		//과부하
@@ -486,7 +482,7 @@ void fcLoadCell(void)
 
 		//감지 (히스테리시스)
 		off = (wDetectOff < wDetectOn) ? wDetectOff : wDetectOn;
-		if(bSensorErr & bit)					bDetect &= ~bit;
+		if((bPowerOnFg==0) || ((bSensorErr|bZeroErr) & bit))	bDetect &= ~bit;
 		else if(iWeight[ch] >= (int16_t)wDetectOn)	bDetect |= bit;
 		else if(iWeight[ch] <  (int16_t)off)		bDetect &= ~bit;
 
@@ -504,21 +500,46 @@ void fcLoadCell(void)
 
 	MDregister[M_DETECT] = bDetect;
 	MDregister[M_ERROR]  = bSensorErr | ((uint16_t)bOverFg << 8);
+	MDregister[M_ZERO_ERR] = bZeroErr;
 }
 
-//전원 투입 영점 : 저장 영점 기준 ±POWERON_ZERO_RANGE 이내 채널만 (RAM 적용, EEPROM 저장 안함)
+//전원 투입 영점 교정 (무부하 가정)
+// 저장 영점 없음      -> 현재값 영점 저장
+// 저장 영점 ±범위 이내 -> 현재값 영점 저장
+// 범위 밖            -> 영점 에러 (무게 측정 안함 , 저장 영점 유지)
 void fcPowerOnZero(void)
 {
-	uint8_t ch;
+	uint8_t ch,bit;
+	int32_t diff,w;
 
 	for(ch=0;ch<CH_NUM;ch++)
 	{
-		if(bSensorErr & (1<<ch))	continue;
+		bit = 1<<ch;
 
-		//영점 미설정(0) 이거나 저장 영점 기준 범위 이내
-		if((wZero[ch]==0) || ((iWeight[ch] <= POWERON_ZERO_RANGE) && (iWeight[ch] >= -POWERON_ZERO_RANGE)))
+		if(bSensorErr & bit)	continue;	//센서 이상 채널은 교정 안함
+
+		if((wZero[ch]==ZERO_UNSET_L) || (wZero[ch]==ZERO_UNSET_H))	//처음 교정
 		{
 			wZero[ch] = wRaw[ch];
+			bSaveFg |= SAVE_ZERO;
+			continue;
+		}
+
+		//저장 영점과 차이 -> 무게 환산
+		diff = (int32_t)wRaw[ch] - (int32_t)wZero[ch];
+		if(lSpan[ch])	w = (diff * SPAN_REF_WEIGHT) / lSpan[ch];
+		else			w = 0;
+		if(w < 0)		w = -w;
+
+		if(w <= ZERO_ERR_RANGE)
+		{
+			wZero[ch] = wRaw[ch];
+			bZeroErr &= ~bit;
+			bSaveFg |= SAVE_ZERO;
+		}
+		else
+		{
+			bZeroErr |= bit;				//영점 에러 : 저장 영점 유지
 		}
 	}
 }
@@ -541,7 +562,11 @@ void fcCmdProcess(void)
 			if((cmd!=CMD_ZERO_ALL) && (ch!=(cmd-CMD_ZERO1)))	continue;
 
 			if(bSensorErr & (1<<ch))	res = CMD_RES_FAIL;
-			else						wZero[ch] = wRaw[ch];
+			else
+			{
+				wZero[ch] = wRaw[ch];
+				bZeroErr &= ~(1<<ch);		//영점 명령으로 영점 에러 해제
+			}
 		}
 		bSaveFg |= SAVE_ZERO;
 	}
@@ -813,7 +838,12 @@ void fcCalInit(void)
 
 	for(k=0;k<CH_NUM;k++)
 	{
-		wZero[k] = (bFilterFull && !(bSensorErr & (1<<k))) ? wRaw[k] : 0;	//현재값을 영점으로 (전원 투입 직후는 0 = 미설정)
+		if(bFilterFull && !(bSensorErr & (1<<k)))	//현재값을 영점으로
+		{
+			wZero[k] = wRaw[k];
+			bZeroErr &= ~(1<<k);
+		}
+		else	wZero[k] = ZERO_UNSET_L;			//미설정 -> 다음 전원 투입 영점에서 저장
 		lSpan[k] = DEF_SPAN;
 	}
 	wDetectOn  = DEF_DETECT_ON;
