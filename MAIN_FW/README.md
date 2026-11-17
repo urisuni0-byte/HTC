@@ -21,10 +21,10 @@
 |---|---|
 | RS232 (상위 장치) | USART0 : PE0 RXD0 / PE1 TXD0 |
 | RS485 (로드셀 보드) | USART3 : PJ0 RXD3 / PJ1 TXD3 |
-| RS485 DE,/RE | PA0 (HIGH = 송신) |
+| RS485 DE,/RE | PJ2 (HIGH = 송신) |
 | STATE LED | PB7 (HIGH = ON) |
 
-아두이노 메가 기준으로는 RS232 = USB 시리얼(Serial), RS485 = 14/15번 핀(Serial3: 14 = TX3, 15 = RX3), DE = 22번 핀, LED = 13번 핀입니다. 회로도가 나오면 `define.h`의 포트 매크로만 바꾸면 됩니다.
+아두이노 메가 기준으로는 RS232 = USB 시리얼(Serial), RS485 = 14/15번 핀(Serial3: 14 = TX3, 15 = RX3), DE = PJ2(아두이노 메가에는 핀이 나와 있지 않음), LED = 13번 핀입니다. 회로도가 나오면 `define.h`의 포트 매크로만 바꾸면 됩니다.
 
 STATE LED: 모든 보드 통신 정상이면 0.5초, 끊긴 보드가 있으면 0.1초 간격으로 점멸합니다.
 

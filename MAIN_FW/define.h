@@ -4,7 +4,7 @@
  *  RS232 (ASCII 프로토콜)   <-> 상위 장치 (PC / HMI)
  */
 //261112
-//261117 RS485 USART3 , 영점 에러 'Z'
+//261117 RS485 USART3 , DE,/RE = PJ2 , 영점 에러 'Z'
 
 #ifndef DEFINE_H_
 #define DEFINE_H_
@@ -16,12 +16,12 @@
 //================================================================
 // USART0 (PE0 RXD0 / PE1 TXD0) : RS232 상위 장치 (MAX232 등)
 // USART3 (PJ0 RXD3 / PJ1 TXD3) : RS485 (MAX485 RO / DI)
-// PA0                          : RS485 DE,/RE  HIGH = 송신
+// PJ2                          : RS485 DE,/RE  HIGH = 송신
 // PB7                          : STATE LED     HIGH = ON
 
-#define			RS485_DDR_INIT		(DDRA |= (1<<PA0))
-#define			RS485_TX_MODE		(PORTA |=  (1<<PA0))
-#define			RS485_RX_MODE		(PORTA &= ~(1<<PA0))
+#define			RS485_DDR_INIT		(DDRJ |= (1<<PJ2))
+#define			RS485_TX_MODE		(PORTJ |=  (1<<PJ2))
+#define			RS485_RX_MODE		(PORTJ &= ~(1<<PJ2))
 
 #define			LED_DDR_INIT		(DDRB |= (1<<PB7))
 #define			LED_ON				(PORTB |=  (1<<PB7))
