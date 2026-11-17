@@ -4,17 +4,18 @@
  *  RS232 (ASCII 프로토콜)   <-> 상위 장치 (PC / HMI)
  */
 //261112
+//261117 RS485 USART3 , 영점 에러 'Z'
 
 #ifndef DEFINE_H_
 #define DEFINE_H_
 
-#define			FW_VERSION			100		//v1.00
+#define			FW_VERSION			101		//v1.01
 
 //================================================================
 // 포트  *** 메인보드 회로도가 없어서 임의로 정함. 회로도에 맞게 수정 ***
 //================================================================
 // USART0 (PE0 RXD0 / PE1 TXD0) : RS232 상위 장치 (MAX232 등)
-// USART1 (PD2 RXD1 / PD3 TXD1) : RS485 (MAX485 RO / DI)
+// USART3 (PJ0 RXD3 / PJ1 TXD3) : RS485 (MAX485 RO / DI)
 // PA0                          : RS485 DE,/RE  HIGH = 송신
 // PB7                          : STATE LED     HIGH = ON
 

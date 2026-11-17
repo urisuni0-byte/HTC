@@ -2,12 +2,15 @@
  * MAIN.c
  *
  * 메인보드 (ATmega2560 16MHz)
- *  - RS485 : 로드셀 컨트롤 보드(SVROCB) 2장을 Modbus RTU 마스터로 폴링
+ *  - RS485 (USART3 RXD3/TXD3) : 로드셀 컨트롤 보드(SVROCB) 2장을 Modbus RTU 마스터로 폴링
  *            (보드1 = Load Cell 1~5 , 보드2 = Load Cell 6~10)
- *  - RS232 : 무게(0.1g)와 유무 상태를 상위 장치로 송신 , 상위 장치 명령(영점/스팬/LED/감지값) 중계
+ *  - RS232 (USART0 RXD0/TXD0) : 무게(0.1g)와 유무 상태를 상위 장치로 송신 , 상위 장치 명령(영점/스팬/LED/감지값) 중계
  */
 //261112
 //최초 작성
+//261117  v1.01
+//로드셀 보드 영점 에러(레지스터 15) 읽기 , 상태 'Z'
+//RS485 포트 USART1 -> USART3 (RXD3/TXD3) 변경 , RS232 는 USART0 (RXD0/TXD0)
 
 #define F_CPU 16000000UL
 
@@ -128,18 +131,18 @@ ISR(TIMER1_COMPA_vect)	//1ms
 }
 
 //================================================================
-// USART1 : RS485
+// USART3 : RS485 (PJ0 RXD3 / PJ1 TXD3)
 //================================================================
-ISR(USART1_RX_vect)
+ISR(USART3_RX_vect)
 {
 	uint8_t st,data;
 
-	st = UCSR1A;
-	data = UDR1;
+	st = UCSR3A;
+	data = UDR3;
 
 	if(bMbState != MS_WAIT || bMbRxDone)	return;	//응답 대기중일 때만 받음
 
-	if(st & ((1<<FE1)|(1<<DOR1)))	bMbRxErr = 1;
+	if(st & ((1<<FE3)|(1<<DOR3)))	bMbRxErr = 1;
 
 	if(bMbRxLen < MB_RX_SIZE)	bMbRxBuf[bMbRxLen++] = data;
 	else						bMbRxErr = 1;
@@ -148,23 +151,23 @@ ISR(USART1_RX_vect)
 	bMbRxBusy = 1;
 }
 
-ISR(USART1_UDRE_vect)
+ISR(USART3_UDRE_vect)
 {
 	if(bMbTxIdx < bMbTxLen)
 	{
-		UDR1 = bMbTxBuf[bMbTxIdx++];
+		UDR3 = bMbTxBuf[bMbTxIdx++];
 	}
 	else
 	{
-		UCSR1B &= ~(1<<UDRIE1);
-		UCSR1A |= (1<<TXC1);				//TXC 플래그 클리어
-		UCSR1B |= (1<<TXCIE1);				//마지막 바이트 송신 완료 대기
+		UCSR3B &= ~(1<<UDRIE3);
+		UCSR3A |= (1<<TXC3);				//TXC 플래그 클리어
+		UCSR3B |= (1<<TXCIE3);				//마지막 바이트 송신 완료 대기
 	}
 }
 
-ISR(USART1_TX_vect)
+ISR(USART3_TX_vect)
 {
-	UCSR1B &= ~(1<<TXCIE1);
+	UCSR3B &= ~(1<<TXCIE3);
 	RS485_RX_MODE;							//송신 완료 -> 수신
 	wMbWaitCnt = 0;
 	bMbTxEnd = 1;							//응답 대기 시작
@@ -226,7 +229,7 @@ void Port_Init(void)
 	LED_DDR_INIT;
 	LED_OFF;
 
-	PORTD |= (1<<PD2);	//RXD1 풀업
+	PORTJ |= (1<<PJ0);	//RXD3 풀업
 	PORTE |= (1<<PE0);	//RXD0 풀업
 }
 
@@ -248,12 +251,12 @@ void UART_init(void)
 	UCSR0C = (1<<UCSZ01)|(1<<UCSZ00);
 	UCSR0B = (1<<RXCIE0)|(1<<RXEN0)|(1<<TXEN0);
 
-	//USART1 : RS485 9600 8N1
-	UCSR1A = (1<<U2X1);
-	UBRR1H = (uint8_t)(MB_UBRR >> 8);
-	UBRR1L = (uint8_t)(MB_UBRR);
-	UCSR1C = (1<<UCSZ11)|(1<<UCSZ10);
-	UCSR1B = (1<<RXCIE1)|(1<<RXEN1)|(1<<TXEN1);
+	//USART3 : RS485 9600 8N1
+	UCSR3A = (1<<U2X3);
+	UBRR3H = (uint8_t)(MB_UBRR >> 8);
+	UBRR3L = (uint8_t)(MB_UBRR);
+	UCSR3C = (1<<UCSZ31)|(1<<UCSZ30);
+	UCSR3B = (1<<RXCIE3)|(1<<RXEN3)|(1<<TXEN3);
 }
 
 int main(void)
@@ -366,7 +369,7 @@ void fcMbSend(uint8_t len)
 	bMbTxLen = len;
 	bMbTxIdx = 0;
 	RS485_TX_MODE;
-	UCSR1B |= (1<<UDRIE1);				//인터럽트 송신 시작
+	UCSR3B |= (1<<UDRIE3);				//인터럽트 송신 시작
 }
 
 //FC03 읽기 요청
