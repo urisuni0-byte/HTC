@@ -5,6 +5,7 @@
  */
 //261112
 //261117 RS485 USART3 , DE,/RE = PJ2 , 영점 에러 'Z'
+//261117 RS232 115200 -> 38400 (보레이트 오차로 글자 깨짐)
 
 #ifndef DEFINE_H_
 #define DEFINE_H_
@@ -91,8 +92,8 @@
 //================================================================
 // RS232 : 상위 장치 ASCII 프로토콜  $CMD,data,...*CS<CR><LF>
 //================================================================
-#define			PC_BAUD				115200UL
-#define			PC_UBRR				((F_CPU / (8UL * PC_BAUD)) - 1)	//U2X=1 -> 16 (2.1%)
+#define			PC_BAUD				38400UL		//16MHz 에서 115200 은 오차 2.1% -> 글자 깨짐 , 38400 은 0.2%
+#define			PC_UBRR				((F_CPU / (8UL * PC_BAUD)) - 1)	//U2X=1 -> 51 (0.2%)
 #define			PC_RX_SIZE			80
 #define			PC_TX_SIZE			512
 #define			PC_ARG_MAX			6

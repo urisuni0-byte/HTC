@@ -12,6 +12,7 @@
 //로드셀 보드 영점 에러(레지스터 15) 읽기 , 상태 'Z'
 //RS485 포트 USART1 -> USART3 (RXD3/TXD3) 변경 , RS232 는 USART0 (RXD0/TXD0)
 //RS485 DE,/RE 핀 PA0 -> PJ2 변경
+//RS232 115200 -> 38400 변경 (16MHz 에서 115200 오차 2.1% 로 글자 깨짐)
 //RS485 요청 송신 완료 전 수신 바이트 무시 (에코/잡음으로 응답 깨짐 방지) , $DBG 통신 진단 명령 추가
 
 #define F_CPU 16000000UL
@@ -253,7 +254,7 @@ void Timer1_Init(void)
 
 void UART_init(void)
 {
-	//USART0 : RS232 115200 8N1
+	//USART0 : RS232 38400 8N1
 	UCSR0A = (1<<U2X0);
 	UBRR0H = (uint8_t)(PC_UBRR >> 8);
 	UBRR0L = (uint8_t)(PC_UBRR);
