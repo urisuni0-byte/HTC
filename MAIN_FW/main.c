@@ -11,6 +11,7 @@
 //261117  v1.01
 //로드셀 보드 영점 에러(레지스터 15) 읽기 , 상태 'Z'
 //RS485 포트 USART1 -> USART3 (RXD3/TXD3) 변경 , RS232 는 USART0 (RXD0/TXD0)
+//RS485 요청 송신 완료 전 수신 바이트 무시 (에코/잡음으로 응답 깨짐 방지) , $DBG 통신 진단 명령 추가
 
 #define F_CPU 16000000UL
 
@@ -64,6 +65,12 @@ uint8_t  bZeroErr[BOARD_NUM]={0,};	//bit0~4 영점 에러
 uint8_t  bOnline[BOARD_NUM]={0,};
 uint8_t  bFailCnt[BOARD_NUM]={0,};
 uint16_t wBoardFw[BOARD_NUM]={0,};
+
+//통신 진단 ($DBG)
+uint16_t wDbgOk[BOARD_NUM]={0,};		//정상 응답
+uint16_t wDbgTimeout[BOARD_NUM]={0,};	//무응답
+uint16_t wDbgBad[BOARD_NUM]={0,};		//응답은 왔으나 깨짐 (CRC/길이/주소)
+uint8_t  bDbgLastLen[BOARD_NUM]={0,};	//마지막 수신 바이트 수
 char     cStatusOld[LC_NUM+1]={0,};
 
 //modbus master
@@ -140,7 +147,8 @@ ISR(USART3_RX_vect)
 	st = UCSR3A;
 	data = UDR3;
 
-	if(bMbState != MS_WAIT || bMbRxDone)	return;	//응답 대기중일 때만 받음
+	//응답 대기중 + 요청 송신 완료 후에만 받음 (송신중 자기 에코 / 잡음 무시)
+	if(bMbState != MS_WAIT || bMbRxDone || bMbTxEnd==0)	return;
 
 	if(st & ((1<<FE3)|(1<<DOR3)))	bMbRxErr = 1;
 
@@ -553,13 +561,20 @@ void fcMbMaster(void)
 
 	if(bMbState == MS_WAIT)
 	{
+		b = bReqBoard;
+
 		if(bMbRxDone)
 		{
 			res = fcMbCheck();
+			bDbgLastLen[b] = bMbRxLen;
+			if(res == RES_COMM){ if(wDbgBad[b] < 0xffff)	wDbgBad[b]++; }
+			else			   { if(wDbgOk[b] < 0xffff)		wDbgOk[b]++; }
 		}
 		else if(bMbTxEnd && (wMbWaitCnt >= MB_RESP_TIMEOUT) && (bMbRxBusy==0))
 		{
 			res = RES_COMM;		//무응답
+			bDbgLastLen[b] = 0;
+			if(wDbgTimeout[b] < 0xffff)	wDbgTimeout[b]++;
 		}
 		else	return;
 
@@ -937,6 +952,23 @@ void fcPcProcess(void)
 	if(strcmp(arg[0], "REQ") == 0)
 	{
 		fcSendData();
+	}
+	//$DBG : 통신 진단 (보드별 정상,무응답,깨짐,마지막수신길이) 출력 후 카운터 초기화
+	else if(strcmp(arg[0], "DBG") == 0)
+	{
+		fcOutStart();
+		fcOutStr("DBG");
+		for(b=0;b<BOARD_NUM;b++)
+		{
+			fcOutChar(',');	fcOutUint(wDbgOk[b]);
+			fcOutChar(',');	fcOutUint(wDbgTimeout[b]);
+			fcOutChar(',');	fcOutUint(wDbgBad[b]);
+			fcOutChar(',');	fcOutUint(bDbgLastLen[b]);
+			wDbgOk[b] = 0;
+			wDbgTimeout[b] = 0;
+			wDbgBad[b] = 0;
+		}
+		fcOutEnd();
 	}
 	//$VER : 버전
 	else if(strcmp(arg[0], "VER") == 0)
